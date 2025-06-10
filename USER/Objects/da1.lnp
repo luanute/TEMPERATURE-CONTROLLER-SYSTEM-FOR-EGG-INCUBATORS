@@ -1,0 +1,18 @@
+--cpu Cortex-M3
+".\objects\main.o"
+".\objects\delay_sys.o"
+".\objects\get_clk.o"
+".\objects\i2c.o"
+".\objects\led7seg.o"
+".\objects\max31865_lib.o"
+".\objects\rtc.o"
+".\objects\stm32f1_gpio.o"
+".\objects\stm32f1_i2c.o"
+".\objects\stm32f1_spi_driver.o"
+".\objects\lcd_i2c.o"
+".\objects\startup_stm32f10x_md.o"
+".\objects\system_stm32f10x.o"
+--strict --scatter ".\Objects\da1.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list ".\Listings\da1.map" -o .\Objects\da1.axf

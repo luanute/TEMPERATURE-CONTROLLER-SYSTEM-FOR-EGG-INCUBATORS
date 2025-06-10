@@ -1,0 +1,814 @@
+#include "stm32f1_gpio.h"
+#include "LCD_I2C.h"
+#include "delay_sys.h"
+#include <stdio.h>
+#include "MAX31865_lib.h"
+#include "led7seg.h"
+#include "rtc.h"
+#include "delay_sys.h"
+// =================================================================================
+// PHẦN 1: CÁC ĐỊNH NGHĨA CẤU TRÚC MENU
+// =================================================================================
+
+// --- 1.1. Enum để xác định loại của một mục menu va id ---
+typedef enum {
+    MENU_ITEM_TYPE_SUBMENU,
+    MENU_ITEM_TYPE_ACTION,
+    MENU_ITEM_TYPE_NUMERIC,
+    MENU_ITEM_TYPE_TIME,
+    MENU_ITEM_TYPE_DATE
+} MenuItemType_t;
+
+typedef enum {
+    ON_OFF,
+    TIMED,
+    CHICKEN_W1,
+    CHICKEN_W2,
+    CHICKEN_W3,
+		DUCK_W1_2,
+		DUCK_W3,
+		DUCK_W4,
+		QUAIL_W1_2,
+		QUAIL_W3
+} IDType_t;
+// --- 1.2. Enum và Struct cho các nút nhấn ---
+typedef enum {
+    BUTTON_ID_DOWN,
+    BUTTON_ID_UP,
+    BUTTON_ID_SELECT,
+    BUTTON_ID_NEXT,
+    BUTTON_ID_BACK
+} ButtonId_t;
+
+typedef struct {
+    volatile uint8_t button_up_flag    : 1;
+    volatile uint8_t button_down_flag  : 1;
+    volatile uint8_t button_select_flag: 1;
+    volatile uint8_t button_back_flag  : 1;
+    volatile uint8_t button_next_flag  : 1;
+} ButtonFlags_t;
+volatile ButtonFlags_t g_button_flags = {0};
+
+// --- 1.3. Struct "cơ sở" cho mọi mục menu ---
+typedef struct MenuItem_t MenuItem_t;
+struct MenuItem_t {
+    const char* text;    // Mục hiển thị trên LCD
+    MenuItemType_t type; // Mục menu loại gì 
+    MenuItem_t* next;    // Trỏ đến mục menu tiếp theo trong cùng một cấp menu
+    MenuItem_t* prev;    // Trỏ đến mục menu phía trước trong cùng một cấp menu
+    void* data;          // Trỏ đến bất kì kiểu nào tùy vào type 
+		IDType_t id;
+};
+
+// --- 1.4. Struct đại diện cho một Menu hoàn chỉnh ---
+typedef struct Menu_t Menu_t;
+struct Menu_t {
+    const char* title;         // Tiêu đề menu hiện tại 
+    MenuItem_t* first_item;    // Trỏ đến mục menu (MenuItem_t) đầu tiên trong danh sách các mục thuộc về menu này
+    MenuItem_t* selected_item; // Mục đang trỏ đến
+    Menu_t* parent_menu;       // Trỏ đến menu cha
+};
+
+// --- 1.5. Struct cho dữ liệu cụ thể của từng loại MenuItem ---
+typedef struct { Menu_t* sub_menu; } SubMenuData_t;
+typedef struct { void (*action_callback)(void); } ActionData_t;
+typedef struct {
+    const char* label;
+    float* value_ptr;
+    float min_val;
+    float max_val;
+    float step;
+} NumericData_t;
+typedef struct { const char* label; Time_t* time_ptr; } TimeData_t;
+typedef struct { const char* label; Date_t* date_ptr; } DateData_t;
+
+// --- 1.6. Máy trạng thái cho hệ thống menu ---
+typedef enum {
+    STATE_Browse,
+    STATE_EDITING
+} MenuSystemState_t;
+
+
+// =================================================================================
+// PHẦN 2: CÁC BIẾN TOÀN CỤC VÀ KHAI BÁO HÀM
+// =================================================================================
+
+// --- 2.1. Các biến toàn cục cho hệ thống ---
+// Các biến cài đặt
+float g_temperature_setting = 37.5f;
+bool g_fan_status = false;
+bool g_light_status = false;
+bool g_lcd_backlight_status = true;
+bool g_led7seg_status = true;
+Time_t g_time_setting = {22, 41, 32};
+Date_t g_date_setting = {6, 6, 2025};
+// Các biến tạm để chỉnh sửa (cần cho chức năng CANCEL)
+float  g_edit_temperature;
+Time_t g_edit_time;
+Date_t g_edit_date;
+uint8_t g_edit_field_selector; // 0:HH/DD, 1:MM/MO, 2:SS/YY
+
+// Các biến quản lý menu
+Menu_t* g_current_menu;
+MenuItem_t* g_item_being_edited;
+MenuSystemState_t g_menu_state = STATE_Browse;
+CLCD_I2C_Name LCD1;
+
+// --- 2.2. Khai báo các hàm quản lý menu ---
+void DisplayMenu(void);
+void ProcessMenu(void);
+
+// --- 2.3. Các biến PID và ngoại vi  ---
+#define ON 1
+#define OFF 0
+#define TEMP_FLOAT_STEP 0.1f
+float setpoint = 37.5;
+float PT100_Temperature = 0.0;
+// ... (Các biến PID và ngoại vi) ...
+float PID_error = 0.0;
+float previous_error = 0.0;
+float PID_i = 0.0;
+float PID_p = 0.0;
+float PID_d = 0.0;
+float PID_value = 0.0;
+float kd = 1, ki = 0.025, kp = 1.8;
+bool zero_cross_detected = 0;
+bool display7seg = true;
+uint32_t timePrev = 0;
+uint32_t Time = 0;
+uint32_t thoigian;
+uint32_t temp_utime;
+float elapsedTime;
+const uint8_t daysInMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+// --- Biến cho chức năng hẹn giờ / báo thức ---
+Time_t g_alarmTime = {07, 00, 00}; 
+Date_t g_alarmDate = {7, 6, 2025}; 
+uint32_t time_check;
+uint32_t current_time;
+bool   g_alarmEnabled = false;     // Cờ cho phép/vô hiệu hóa báo thức
+
+// ...
+
+// Các biến trạng thái điều khiển SSR
+	uint8_t fix = 0;      // Đánh dấu bật trước khi ổn định (pre-heat)
+	uint8_t fix_oke = 0;  // Đánh dấu đã bật nhiệt ổn định
+	const uint16_t max_firing_delay = 8300; 
+	
+	
+// --- 2.4. Khai báo các hàm chức năng (giữ nguyên) ---
+void PID(void);
+void update_display_if_needed(float new_temperature);
+bool ckeck_alarm();
+
+
+// =================================================================================
+// PHẦN 3: XÂY DỰNG CÂY MENU 
+// =================================================================================
+
+// --- 3.1. Các hàm Action Callback (hàm được gọi khi chọn một mục ACTION) ---
+// Đây là các hàm "bọc" để gọi lại hàm Activation 
+void Action_ToggleFan() {
+    g_fan_status = !g_fan_status;
+    if (g_fan_status) { GPIOB->ODR |= (1 << 8); } else { GPIOB->ODR &= ~(1 << 8); }
+}
+void Action_ToggleLight() {
+    g_light_status = !g_light_status;
+    if (g_light_status) { GPIOx_INIT(GPIOA, 15, GPIO_MODE_OUTPUT_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_HIGH); }
+    else { GPIOx_INIT(GPIOA, 15, GPIO_MODE_INPUT_PUPD, GPIO_PULLUP, GPIO_SPEED_FREQ_LOW); }
+}
+void Action_ToggleLcdBacklight() {
+    g_lcd_backlight_status = !g_lcd_backlight_status;
+    if (g_lcd_backlight_status) { CLCD_I2C_BacklightOn(&LCD1); } else { CLCD_I2C_BacklightOff(&LCD1); }
+}
+void Action_ToggleLed7Seg() {
+    g_led7seg_status = !g_led7seg_status;
+    display7seg = g_led7seg_status;
+}
+void  Action_current_rtc(){
+		RTC_SetDateTime(&g_date_setting, &g_time_setting);
+}
+void Action_Alarm(void);
+// --- 3.2. Khai báo trước các Menu để có thể liên kết  ---
+Menu_t menu_main, menu_auto, menu_manual, menu_settings, menu_fan_light, menu_other_devices,menu_time_date,menu_Alarm_Temp,menu_chicken,menu_duck,menu_quail;
+NumericData_t config_temp_data = {"Temp Set:", &g_temperature_setting, 25.0f, 40.0f, 0.1f};
+TimeData_t    config_time_data = {"Set Time:", &g_time_setting};
+DateData_t    config_date_data = {"Set Date:", &g_date_setting};
+TimeData_t    config_alarm_time_data = {"Set Time:", &g_alarmTime};
+DateData_t    config_alarm_date_data  = {"Set Date:", &g_alarmDate};
+MenuItem_t item_manual_temp,item_manual_time,item_manual_date;
+// --- 3.3. Định nghĩa Menu "Settings" và các menu con của nó ---
+// Menu Other Devices
+ActionData_t action_data_lcd = {Action_ToggleLcdBacklight};
+ActionData_t action_data_led7 = {Action_ToggleLed7Seg};
+MenuItem_t item_settings_other_led7;
+MenuItem_t item_settings_other_lcd  = {"ON/OFF LCD", MENU_ITEM_TYPE_ACTION, &item_settings_other_led7, NULL, &action_data_lcd};
+MenuItem_t item_settings_other_led7 = {"ON/OFF LED 7-seg", MENU_ITEM_TYPE_ACTION, NULL, &item_settings_other_lcd, &action_data_led7};
+Menu_t menu_other_devices = {"OTHER DEVICES", &item_settings_other_lcd, &item_settings_other_lcd, &menu_settings};
+// Menu Fan & Light
+ActionData_t action_data_fan = {Action_ToggleFan};
+ActionData_t action_data_light = {Action_ToggleLight};
+MenuItem_t item_settings_light;
+MenuItem_t item_settings_fanlight,item_settings_other,item_settings_time_date,item_settings_date,item_settings_time,current_rtc;
+MenuItem_t item_settings_fan  = {"Bat/Tat Quat", MENU_ITEM_TYPE_ACTION, &item_settings_light, NULL, &action_data_fan};
+MenuItem_t item_settings_light = {"Bat/Tat Den", MENU_ITEM_TYPE_ACTION, NULL, &item_settings_fan, &action_data_light};
+Menu_t menu_fan_light = {"     FAN & LIGHT     ", &item_settings_fan, &item_settings_fan, &menu_settings};
+// Time & Date 
+ActionData_t action_data_time_date ={Action_current_rtc};
+MenuItem_t item_settings_time     = {"Configure Time", MENU_ITEM_TYPE_TIME,  &item_settings_date, NULL, &config_time_data};
+MenuItem_t item_settings_date     = {"Configure Date", MENU_ITEM_TYPE_DATE,  &current_rtc, &item_settings_time, &config_date_data};
+MenuItem_t current_rtc            = {"Save",MENU_ITEM_TYPE_ACTION,NULL,&item_settings_date,&action_data_time_date};
+Menu_t menu_time_date = {"    Time & Date     ", &item_settings_time, &item_settings_time, &menu_settings};
+
+// Menu Settings chính
+SubMenuData_t submenu_data_fanlight = {&menu_fan_light};
+SubMenuData_t submenu_data_other = {&menu_other_devices};
+SubMenuData_t submenu_time_date = {&menu_time_date};
+
+MenuItem_t item_settings_fanlight = {"Fan & Light", MENU_ITEM_TYPE_SUBMENU, &item_settings_other, NULL, &submenu_data_fanlight};
+MenuItem_t item_settings_other  = {"Other Devices", MENU_ITEM_TYPE_SUBMENU, &item_settings_time_date, &item_settings_fanlight, &submenu_data_other};
+MenuItem_t item_settings_time_date  = {"Time & Date", MENU_ITEM_TYPE_SUBMENU,  NULL, &item_settings_other, &submenu_time_date};
+Menu_t menu_settings = {"     SETTINGS       ", &item_settings_fanlight, &item_settings_fanlight, &menu_main};
+
+
+// --- 3.4. Định nghĩa Menu "Manual" ---
+SubMenuData_t submenu_alram_temp ={&menu_Alarm_Temp};
+MenuItem_t item_manual_on_off,item_timed_on_off,item_alram_temp;
+MenuItem_t item_manual_temp = {"Set TEMP           ", MENU_ITEM_TYPE_NUMERIC, &item_manual_time, NULL, &config_temp_data};
+MenuItem_t item_manual_time = {"Set Alarm Time     ", MENU_ITEM_TYPE_TIME, &item_manual_date, &item_manual_temp, &config_alarm_time_data};
+MenuItem_t item_manual_date = {"Set Alarm Date     ", MENU_ITEM_TYPE_DATE, NULL, &item_manual_time, &config_alarm_date_data};
+Menu_t menu_Alarm_Temp  ={"   ALARM & TEMP     ", &item_manual_temp, &item_manual_temp, &menu_manual};
+
+ActionData_t checke_alarm  = {Action_Alarm};
+
+MenuItem_t item_alram_temp ={"Alarm & Temp",MENU_ITEM_TYPE_SUBMENU,&item_manual_on_off,NULL,&submenu_alram_temp};
+MenuItem_t item_manual_on_off = {"On/Off",MENU_ITEM_TYPE_ACTION,&item_timed_on_off,&item_alram_temp,&checke_alarm,ON_OFF};
+MenuItem_t item_timed_on_off   = {"Timed On/Off",MENU_ITEM_TYPE_ACTION,NULL,&item_manual_on_off,&checke_alarm,TIMED};
+Menu_t menu_manual = {"   MANUAL MODE      ", &item_alram_temp, &item_alram_temp, &menu_main};
+
+// --- 3.5. Định nghĩa Menu "Auto" ---
+MenuItem_t item_Chicken,item_Quail,item_Duck,item_auto_tuan1,item_auto_tuan2,item_auto_tuan3;
+
+SubMenuData_t submenu_Chicken = {&menu_chicken};
+SubMenuData_t submenu_Duck = {&menu_duck};
+SubMenuData_t submenu_Quail = {&menu_quail};
+
+MenuItem_t item_Chicken = {"Chicken Eggs", MENU_ITEM_TYPE_SUBMENU, &item_Duck, NULL, &submenu_Chicken}; 
+MenuItem_t item_Duck    = {"Duck Eggs", MENU_ITEM_TYPE_SUBMENU, &item_Quail, &item_Chicken, &submenu_Duck};
+MenuItem_t item_Quail   = {"Quail Eggs", MENU_ITEM_TYPE_SUBMENU, NULL, &item_Duck, &submenu_Quail};
+Menu_t menu_auto = {"    AUTO MODE       ", &item_Chicken, &item_Chicken, &menu_main};
+
+MenuItem_t item_chicken_w1,item_chicken_w2,item_chicken_w3;
+MenuItem_t item_chicken_w1 = {"Week 1 (37.8 C)", MENU_ITEM_TYPE_ACTION, &item_chicken_w2, NULL, &checke_alarm,CHICKEN_W1}; 
+MenuItem_t item_chicken_w2    = {"Week 2 (37.5 C)", MENU_ITEM_TYPE_ACTION, &item_chicken_w3, &item_chicken_w1, &checke_alarm,CHICKEN_W2};
+MenuItem_t item_chicken_w3   = {"Week 3 (37.2 C)", MENU_ITEM_TYPE_ACTION, NULL, &item_chicken_w2, &checke_alarm,CHICKEN_W3};
+Menu_t menu_chicken = {"   CHICKEN EGGS     ", &item_chicken_w1, &item_chicken_w1, &menu_auto};
+
+MenuItem_t item_duck_w1_2,item_duck_w3,item_duck_w4;
+MenuItem_t item_duck_w1_2 = {"Week 1-2 (38.0 C)", MENU_ITEM_TYPE_ACTION, &item_duck_w3, NULL, &checke_alarm,DUCK_W1_2}; 
+MenuItem_t item_duck_w3    = {"Week 3 (37.8 C)", MENU_ITEM_TYPE_ACTION, &item_duck_w4, &item_duck_w1_2, &checke_alarm,DUCK_W3};
+MenuItem_t item_duck_w4   = {"Week 4 (37.5 C)", MENU_ITEM_TYPE_ACTION, NULL, &item_duck_w3, &checke_alarm,DUCK_W4};
+Menu_t menu_duck = {"    DUCK EGGS       ", &item_duck_w1_2, &item_duck_w1_2, &menu_auto};
+
+MenuItem_t item_quail_w1_2,item_quail_w3;
+MenuItem_t item_quail_w1_2 = {"Week 1-2 (38.0 C)", MENU_ITEM_TYPE_ACTION, &item_quail_w3, NULL, &checke_alarm,QUAIL_W1_2}; 
+MenuItem_t item_quail_w3    = {"Week 3 (37.8 C)", MENU_ITEM_TYPE_ACTION, NULL, &item_quail_w1_2, &checke_alarm,QUAIL_W3};
+Menu_t menu_quail  = {"    QUAIL EGGS      ", &item_duck_w1_2, &item_duck_w1_2, &menu_auto};
+
+// --- 3.6. Định nghĩa Menu Chính (MainMenu) ---
+SubMenuData_t submenu_data_auto = {&menu_auto};
+SubMenuData_t submenu_data_manual = {&menu_manual};
+SubMenuData_t submenu_data_settings = {&menu_settings};
+MenuItem_t item_main_auto,item_main_manual,item_main_settings;
+MenuItem_t item_main_auto     = {"AUTO MODE          ", MENU_ITEM_TYPE_SUBMENU, &item_main_manual, NULL, &submenu_data_auto};
+MenuItem_t item_main_manual   = {"MANUAL MODE        ", MENU_ITEM_TYPE_SUBMENU, &item_main_settings, &item_main_auto, &submenu_data_manual};
+MenuItem_t item_main_settings = {"SETTINGS           ", MENU_ITEM_TYPE_SUBMENU, NULL, &item_main_manual, &submenu_data_settings};
+Menu_t menu_main = {"    MAIN MENU       ", &item_main_auto, &item_main_auto, NULL};
+
+
+// =================================================================================
+// PHẦN 4: LOGIC ĐIỀU KHIỂN VÀ HIỂN THỊ MENU MỚI
+// =================================================================================
+
+// --- 4.1. Các hàm con để hiển thị màn hình chỉnh sửa ---
+void DisplayNumericEditor(MenuItem_t* item) {
+    NumericData_t* data = (NumericData_t*)item->data;
+    char buffer[21];
+   // CLCD_I2C_SetCursor(&LCD1, 0, 1);
+    //CLCD_I2C_WriteString(&LCD1, "                    ");
+    CLCD_I2C_SetCursor(&LCD1, 0, 1);
+    sprintf(buffer, "%s %2.1f oC   ", data->label, g_edit_temperature);
+    CLCD_I2C_WriteString(&LCD1, buffer);
+    CLCD_I2C_SetCursor(&LCD1, 0, 3);
+    CLCD_I2C_WriteString(&LCD1, "UP/DN:CHG, SEL:SAVE");
+}
+
+void DisplayTimeEditor(MenuItem_t* item) {
+    TimeData_t * data = (TimeData_t*)item->data;
+    char buffer[21];
+    //CLCD_I2C_SetCursor(&LCD1, 0, 1);
+    //CLCD_I2C_WriteString(&LCD1, "                    ");
+    CLCD_I2C_SetCursor(&LCD1, 0, 1);
+    sprintf(buffer, "%s %02d:%02d:%02d  ",data->label, g_edit_time.hours, g_edit_time.minutes, g_edit_time.seconds);
+    CLCD_I2C_WriteString(&LCD1, buffer);
+
+    //CLCD_I2C_SetCursor(&LCD1, 0, 2);
+    //CLCD_I2C_WriteString(&LCD1, "                    ");
+    CLCD_I2C_SetCursor(&LCD1, 10 + g_edit_field_selector * 3, 2);
+    CLCD_I2C_WriteString(&LCD1, "^^");
+    CLCD_I2C_SetCursor(&LCD1, 0, 3);
+    CLCD_I2C_WriteString(&LCD1, "NXT:FLD,SEL:SAVE    ");
+}
+
+void DisplayDateEditor(MenuItem_t* item) {
+    DateData_t * data = (DateData_t*)item->data;
+    char buffer[21];
+    //CLCD_I2C_SetCursor(&LCD1, 0, 1);
+    //CLCD_I2C_WriteString(&LCD1, "                    ");
+    CLCD_I2C_SetCursor(&LCD1, 0, 1);
+    sprintf(buffer, "%s %02d/%02d/%04d",data->label, g_edit_date.day, g_edit_date.month, g_edit_date.year);
+    CLCD_I2C_WriteString(&LCD1, buffer);
+
+    //CLCD_I2C_SetCursor(&LCD1, 0, 2);
+    //CLCD_I2C_WriteString(&LCD1, "                    ");
+		CLCD_I2C_SetCursor(&LCD1, 10 + g_edit_field_selector * 3, 2);
+    CLCD_I2C_WriteString(&LCD1, "^^");
+    if(g_edit_field_selector == 2){      
+			CLCD_I2C_SetCursor(&LCD1, 18, 2);
+      CLCD_I2C_WriteString(&LCD1, "^^");
+			}
+    CLCD_I2C_SetCursor(&LCD1, 0, 3);
+    CLCD_I2C_WriteString(&LCD1, "NXT:FLD,SEL:SAVE    ");
+}
+
+
+// --- 4.2. Hàm hiển thị chính ---
+void DisplayMenu(void) {
+    CLCD_I2C_Clear(&LCD1);
+    CLCD_I2C_SetCursor(&LCD1, 0, 0);
+    CLCD_I2C_WriteString(&LCD1, (char*)g_current_menu->title);
+	
+    if (g_menu_state == STATE_Browse) {
+        MenuItem_t* item_to_display = g_current_menu->first_item;
+        uint8_t row = 1;
+        while (item_to_display != NULL && row < 4) { // Chỉ hiển thị tối đa 3 mục
+            CLCD_I2C_SetCursor(&LCD1, 0, row);
+            if (item_to_display == g_current_menu->selected_item) {
+                CLCD_I2C_WriteString(&LCD1, ">");
+            } else {
+                CLCD_I2C_WriteString(&LCD1, " ");
+            }
+            CLCD_I2C_WriteString(&LCD1, (char*)item_to_display->text);
+            item_to_display = item_to_display->next;
+            row++;
+        }
+    } else if (g_menu_state == STATE_EDITING) {
+        switch (g_item_being_edited->type) {
+            case MENU_ITEM_TYPE_NUMERIC: DisplayNumericEditor(g_item_being_edited); break;
+            case MENU_ITEM_TYPE_TIME:    DisplayTimeEditor(g_item_being_edited);    break;
+            case MENU_ITEM_TYPE_DATE:    DisplayDateEditor(g_item_being_edited);    break;
+            default: break;
+        }
+    }
+}
+
+// --- 4.3. Hàm xử lý đầu vào khi đang chỉnh sửa ---
+void HandleEditInput(ButtonId_t button) {
+    if (g_item_being_edited == NULL) return;
+
+    switch (g_item_being_edited->type) {
+        case MENU_ITEM_TYPE_NUMERIC: {
+            NumericData_t* data = (NumericData_t*)g_item_being_edited->data;
+            if (button == BUTTON_ID_UP)   g_edit_temperature += data->step;
+            if (button == BUTTON_ID_DOWN) g_edit_temperature -= data->step;
+            if (g_edit_temperature > data->max_val) g_edit_temperature = data->max_val;
+            if (g_edit_temperature < data->min_val) g_edit_temperature = data->min_val;
+            break;
+        }
+        case MENU_ITEM_TYPE_TIME: {
+            if (button == BUTTON_ID_NEXT) g_edit_field_selector = (g_edit_field_selector + 1) % 3;
+            if (button == BUTTON_ID_UP) {
+                if (g_edit_field_selector == 0) g_edit_time.hours = (g_edit_time.hours + 1) % 24;
+                if (g_edit_field_selector == 1) g_edit_time.minutes = (g_edit_time.minutes + 1) % 60;
+                if (g_edit_field_selector == 2) g_edit_time.seconds = (g_edit_time.seconds + 1) % 60;
+            }
+            if (button == BUTTON_ID_DOWN) {
+                if (g_edit_field_selector == 0) g_edit_time.hours = (g_edit_time.hours == 0) ? 23 : g_edit_time.hours - 1;
+                if (g_edit_field_selector == 1) g_edit_time.minutes = (g_edit_time.minutes == 0) ? 59 : g_edit_time.minutes - 1;
+                if (g_edit_field_selector == 2) g_edit_time.seconds = (g_edit_time.seconds == 0) ? 59 : g_edit_time.seconds - 1;
+            }
+            break;
+        }
+        case MENU_ITEM_TYPE_DATE: {
+             if (button == BUTTON_ID_NEXT) g_edit_field_selector = (g_edit_field_selector + 1) % 3;
+             if (button == BUTTON_ID_UP) {
+                 if (g_edit_field_selector == 0) g_edit_date.day++;
+                 if (g_edit_field_selector == 1) g_edit_date.month = (g_edit_date.month >= 12) ? 1 : g_edit_date.month + 1;
+                 if (g_edit_field_selector == 2) g_edit_date.year = (g_edit_date.year >= 2099) ? 2000 : g_edit_date.year + 1;
+             }
+             if (button == BUTTON_ID_DOWN) {
+                 if (g_edit_field_selector == 0) g_edit_date.day = (g_edit_date.day <= 1) ? GetDaysInMonth(g_edit_date.month, g_edit_date.year) : g_edit_date.day - 1;
+                 if (g_edit_field_selector == 1) g_edit_date.month = (g_edit_date.month <= 1) ? 12 : g_edit_date.month - 1;
+                 if (g_edit_field_selector == 2) g_edit_date.year = (g_edit_date.year <= 2000) ? 2099 : g_edit_date.year - 1;
+             }
+             uint8_t max_days = GetDaysInMonth(g_edit_date.month, g_edit_date.year);
+             if (g_edit_date.day > max_days) g_edit_date.day = 1;
+             if (g_edit_date.day < 1) g_edit_date.day = max_days;
+            break;
+        }
+        default: break;
+    }
+    DisplayMenu(); // Cập nhật lại màn hình editor sau khi thay đổi
+}
+
+// --- 4.4. Hàm xử lý nút nhấn chính ---
+void ProcessMenu(void) {
+    if (g_button_flags.button_down_flag) {
+        g_button_flags.button_down_flag = 0;
+        if (g_menu_state == STATE_Browse) {
+            if (g_current_menu->selected_item->next) g_current_menu->selected_item = g_current_menu->selected_item->next;
+        } else { HandleEditInput(BUTTON_ID_DOWN); }
+        DisplayMenu();
+    }
+    if (g_button_flags.button_up_flag) {
+        g_button_flags.button_up_flag = 0;
+        if (g_menu_state == STATE_Browse) {
+            if (g_current_menu->selected_item->prev) g_current_menu->selected_item = g_current_menu->selected_item->prev;
+        } else { HandleEditInput(BUTTON_ID_UP); }
+        DisplayMenu();
+    }
+    if (g_button_flags.button_next_flag) { // Nút NEXT/ENTER để vào menu con/chỉnh sửa
+        g_button_flags.button_next_flag = 0;
+        if (g_menu_state == STATE_Browse) {
+            MenuItem_t* selected = g_current_menu->selected_item;
+            switch (selected->type) {
+                case MENU_ITEM_TYPE_SUBMENU:
+                    g_current_menu = ((SubMenuData_t*)selected->data)->sub_menu;
+                    break;
+                case MENU_ITEM_TYPE_ACTION:
+                    if (selected->data) ((ActionData_t*)selected->data)->action_callback();
+                    break;
+                case MENU_ITEM_TYPE_NUMERIC:
+                case MENU_ITEM_TYPE_TIME:
+                case MENU_ITEM_TYPE_DATE:
+                    g_menu_state = STATE_EDITING;
+                    g_item_being_edited = selected;
+                    if (selected->type == MENU_ITEM_TYPE_NUMERIC) g_edit_temperature = g_temperature_setting;
+                    if (selected->type == MENU_ITEM_TYPE_TIME){ g_time_setting=g_currentTime;   g_edit_time = *(((TimeData_t*)g_item_being_edited->data)->time_ptr);} 
+                    if (selected->type == MENU_ITEM_TYPE_DATE){ g_date_setting=g_currentDate;   g_edit_date = *(((DateData_t*)g_item_being_edited->data)->date_ptr);}
+                    g_edit_field_selector = 0;
+                    break;
+            }
+        } else { HandleEditInput(BUTTON_ID_NEXT); }
+        DisplayMenu();
+    }
+    if (g_button_flags.button_select_flag) { // Nút SELECT/OK để lưu
+        g_button_flags.button_select_flag = 0;
+        if (g_menu_state == STATE_EDITING) {
+            g_menu_state = STATE_Browse;
+            // Sao chép giá trị đã chỉnh sửa vào biến cài đặt gốc
+            if (g_item_being_edited->type == MENU_ITEM_TYPE_NUMERIC) g_temperature_setting = g_edit_temperature;
+            if (g_item_being_edited->type == MENU_ITEM_TYPE_TIME)    *(((TimeData_t*)g_item_being_edited->data)->time_ptr) = g_edit_time;
+            if (g_item_being_edited->type == MENU_ITEM_TYPE_DATE)    *(((DateData_t*)g_item_being_edited->data)->date_ptr) = g_edit_date;
+            DisplayMenu();
+        }
+    }
+    if (g_button_flags.button_back_flag) {
+        g_button_flags.button_back_flag = 0;
+        if (g_menu_state == STATE_EDITING) {
+            g_menu_state = STATE_Browse; // Hủy thay đổi, không sao chép giá trị
+        } else if (g_menu_state == STATE_Browse) {
+            if (g_current_menu->parent_menu) g_current_menu = g_current_menu->parent_menu;
+        }
+        DisplayMenu();
+    }
+}
+
+
+
+void EXTI_Config_Init(void);
+
+/*----------------------------------------------------------------------*/
+
+
+void setup_MAX31865_SPI(void) {
+        GPIOx_INIT(GPIOA,5, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//clk
+        GPIOx_INIT(GPIOA,6, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//MISO
+				GPIOx_INIT(GPIOA,7, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//MOSI 
+		    GPIOx_INIT(GPIOA,4, GPIO_MODE_OUTPUT_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//CS
+    //    ...
+    //    cs_reset(); // Kéo CS lên cao ban đầu sau khi cấu hình GPIO
+				GPIOA->ODR |=1<<4;
+    // 2. Khởi tạo SPI1 bằng driver của bạn
+    SPI_Handle_t hspi_max31865; // Đổi tên để tránh trùng với hspi1 nếu bạn vẫn dùng HAL ở đâu đó
+    hspi_max31865.pSPIx = SPI1; // MAX31865_SPI đã được định nghĩa là SPI1 trong MAX31865_lib.c
+    hspi_max31865.SPIConfig.SPI_DeviceMode = SPI_DEVICE_MODE_MASTER;
+    hspi_max31865.SPIConfig.SPI_BusConfig = SPI_BUS_CONFIG_FD;
+    hspi_max31865.SPIConfig.SPI_SclkSpeed = SPI_SCLK_SPEED_DIV16; // Giả sử PCLK=72MHz, SCK = 4.5MHz
+    hspi_max31865.SPIConfig.SPI_DFF = SPI_DFF_8BITS;
+    hspi_max31865.SPIConfig.SPI_CPOL = SPI_CPOL_LOW;     // CPOL = 0
+    hspi_max31865.SPIConfig.SPI_CPHA = SPI_CPHA_SECOND_EDGE;
+    hspi_max31865.SPIConfig.SPI_SSM = SPI_SSM_EN;        // Software slave management
+
+    SPI_Init(&hspi_max31865);
+    SPI_PeripheralControl(hspi_max31865.pSPIx, ENABLE); // Bật ngoại vi SPI
+}
+
+float nhiet_do;
+#define NUM_SAMPLES 20  // Số mẫu lấy trung bình
+#define TEMPERATURE_CHANGE_THRESHOLD 0.1  // Ngưỡng thay đổi nhiệt độ (đơn vị là °C)
+
+float temperature_samples[NUM_SAMPLES];  // Mảng chứa các giá trị mẫu
+int sample_index = 0;
+float last_displayed_temperature = -999.0;
+float avg_temperature;      
+
+
+
+int main(void) {
+
+    SysTick_Init();
+		setup_MAX31865_SPI();
+		MAX31865_Init(3);
+   
+    I2Cx_INIT(I2C2,I2C2_Pin_PB10PB11,100000);
+    GPIOx_INIT(GPIOB,8,GPIO_MODE_OUTPUT_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_LOW);
+    GPIOx_INIT(GPIOC,13,GPIO_MODE_INPUT_PUPD,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+    GPIOx_INIT(GPIOA,0,GPIO_MODE_INPUT_PUPD,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+	  GPIOx_INIT(GPIOA,1,GPIO_MODE_INPUT_PUPD,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+		GPIOx_INIT(GPIOA,2,GPIO_MODE_INPUT_PUPD,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+    GPIOx_INIT(GPIOA,3,GPIO_MODE_INPUT_PUPD,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+		GPIOx_INIT(GPIOA,11,GPIO_MODE_OUTPUT_PP,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+		GPIOx_INIT(GPIOA,15,GPIO_MODE_OUTPUT_PP,GPIO_PULLUP,GPIO_SPEED_FREQ_HIGH);
+		GPIOx_INIT(GPIOB,9,GPIO_MODE_INPUT_PUPD,GPIO_PULLUP,GPIO_SPEED_FREQ_LOW);
+		EXTI_Config_Init();
+		CLCD_I2C_Init(&LCD1,I2C2,0x27,20,4);
+		delay_ms(500);
+		led7seg_init_gpio_custom();
+		Timer_Scan_LED_Init();
+		// Khởi tạo menu
+    g_current_menu = &menu_main;
+    DisplayMenu();
+		avg_temperature= MAX31865_Get_Temperature();
+    
+		    RTC_Init();
+				uint32_t counterValue = ((uint32_t)RTC->CNTH << 16) | RTC->CNTL;
+     if (counterValue == 0) { // Kiểm tra cờ báo đã cấu hình
+        // Nếu cờ không tồn tại (lần đầu chạy hoặc mất pin VBAT)
+        // Đặt thời gian mặc định là thời gian hiện tại				
+        RTC_SetDateTime(&g_date_setting, &g_time_setting);
+    }
+    
+    // Luôn đọc lại thời gian đúng từ RTC khi khởi động
+    RTC_GetDateTime((Date_t*)&g_currentDate, (Time_t*)&g_currentTime);
+				
+		
+    while(1) {
+		//GPIOC->ODR ^= (1 << 13); // Nếu LED ở PC13
+				//delay_ms(1000);
+				//CLCD_I2C_BacklightOff(&LCD1);
+				     
+             PT100_Temperature = MAX31865_Get_Temperature();
+						  update_display_if_needed(PT100_Temperature);
+							if(ckeck_alarm()) PID();							
+							ProcessMenu();
+		
+    }
+}
+
+
+
+// Cấu hình ngắt cho các nút nhấn
+void EXTI_Config_Init(void) {
+    EXTI_Config_t my_exti;
+
+    // Cấu hình ngắt cho nút BACK (C13)
+    my_exti.GPIO_Port = GPIOC;
+    my_exti.GPIO_Pin = 13;  // Chân C13
+    my_exti.Trigger = EXTI_TRIGGER_FALLING; // Kích hoạt ngắt khi có sự thay đổi xuống
+    my_exti.IRQ_PreemptionPriority = 6; // Ưu tiên ngắt
+    my_exti.IRQ_SubPriority = 0; // Phụ ưu tiên
+    EXTI_Init(&my_exti);
+
+    // Cấu hình ngắt cho nút DOWN (A0)
+		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Pin = 0;  // Chân A0
+		my_exti.IRQ_SubPriority = 1;
+    EXTI_Init(&my_exti);
+
+    // Cấu hình ngắt cho nút SELECT (A1)
+		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Pin = 1;  // Chân A1
+		 my_exti.IRQ_SubPriority = 2;
+    EXTI_Init(&my_exti);
+
+    // Cấu hình ngắt cho nút UP (A2)
+		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Pin = 2;  // Chân A2
+    EXTI_Init(&my_exti);
+		 my_exti.IRQ_SubPriority = 3;
+
+    // Cấu hình ngắt cho nút NEXT (A3)
+		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Pin = 3;  // Chân A3
+		 my_exti.IRQ_SubPriority = 4;
+    EXTI_Init(&my_exti);
+		
+		// Cấu hình ngắt cho nút NEXT (A3)
+		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Pin = 3;  // Chân A3
+		 my_exti.IRQ_SubPriority = 4;
+    EXTI_Init(&my_exti);
+		
+		my_exti.GPIO_Port = GPIOB;
+    my_exti.GPIO_Pin = 9;  // Chân A3
+		 my_exti.Trigger = EXTI_TRIGGER_RISING; // Kích hoạt ngắt khi có sự thay đổi xuống
+    my_exti.IRQ_PreemptionPriority = 2; // Ưu tiên ngắt
+    my_exti.IRQ_SubPriority = 3; // Phụ ưu tiên
+    EXTI_Init(&my_exti);
+}
+
+
+
+
+// --- Các ISR chỉ set cờ, logic được xử lý trong ProcessMenu ---
+void EXTI0_IRQHandler(void) {
+    if (EXTI->PR & (1 << 0)) { g_button_flags.button_down_flag = 1; EXTI->PR |= (1 << 0); }
+}
+void EXTI1_IRQHandler(void) {
+    if (EXTI->PR & (1 << 1)) { g_button_flags.button_select_flag = 1; EXTI->PR |= (1 << 1); }
+}
+void EXTI2_IRQHandler(void) {
+    if (EXTI->PR & (1 << 2)) { g_button_flags.button_up_flag = 1; EXTI->PR |= (1 << 2); }
+}
+void EXTI3_IRQHandler(void) {
+    if (EXTI->PR & (1 << 3)) { g_button_flags.button_next_flag = 1; EXTI->PR |= (1 << 3); }
+}
+void EXTI15_10_IRQHandler(void) {
+    if (EXTI->PR & (1 << 13)) { g_button_flags.button_back_flag = 1; EXTI->PR |= (1 << 13); }
+}
+void EXTI9_5_IRQHandler(void) {
+    if (EXTI->PR & (1U << 9)) { zero_cross_detected = 1; EXTI->PR = (1U << 9); }
+}
+
+void TIM2_IRQHandler(void) {
+    // Kiểm tra xem ngắt có phải là do cờ Update (UIF - Update Interrupt Flag) gây ra không
+    // Thanh ghi TIM2_SR, bit UIF (bit 0)
+    if (TIM2->SR & TIM_SR_UIF) { // Hoặc (TIM2->SR & (1U << 0))
+
+			  if(display7seg){
+        led7seg_scan_custom();
+				}else {GPIOB->ODR |= 0xF<<12; }
+        // Xóa cờ ngắt Update để Timer có thể tạo ngắt ở chu kỳ tiếp theo.
+        // Ghi 0 vào bit UIF để xóa nó.
+        TIM2->SR &= ~TIM_SR_UIF; // Hoặc TIM2->SR &= ~(1U << 0);
+    }
+}
+
+
+
+void PID() {
+    uint32_t currentMillis = Get_Millis();
+
+    // Cập nhật PID mỗi 1000 ms
+    if (currentMillis - thoigian >= 1000) {
+        thoigian = currentMillis;
+        timePrev = Time;
+        Time = currentMillis;
+
+        // Tính thời gian trôi qua (giây)
+        elapsedTime = (Time - timePrev) / 1000.0;
+        if (elapsedTime == 0) elapsedTime = 0.001; // Tránh chia cho 0
+
+        // Tính sai số
+        PID_error = setpoint - avg_temperature;
+
+        // Reset I-term nếu sai số quá lớn (tránh tích lũy sai lệch)
+        if (fabs(PID_error) > 3.1) {
+            PID_i = 0;
+        }
+
+        // Thành phần P, I, D
+        PID_p = kp * PID_error;
+        PID_i += ki * PID_error * elapsedTime;
+        PID_d = kd * (PID_error - previous_error) / elapsedTime;
+
+        // Tính PID output
+        PID_value = PID_p + PID_i + PID_d;
+
+        // Giới hạn PID_value nằm trong [0, max_firing_delay]
+        if (PID_value < 0) PID_value = 0;
+        if (PID_value > max_firing_delay) PID_value = max_firing_delay;
+
+        // Cập nhật sai số trước đó
+        previous_error = PID_error;
+    }
+
+    // Xử lý kích TRIAC khi phát hiện zero-cross
+    if (zero_cross_detected) {
+        zero_cross_detected = 0; // Reset cờ zero-cross
+
+        // Trễ trước khi kích triac: càng trễ thì công suất càng nhỏ
+        uint32_t firingDelay = max_firing_delay - (uint32_t)PID_value;
+        delay_us(firingDelay);
+
+        // Kích TRIAC (SSR) nếu nhiệt độ chưa đạt setpoint
+        if (PT100_Temperature < setpoint) {
+            GPIO_Write(GPIOA, 15, 1);   // Bật
+            delay_us(100);             // Giữ tối thiểu để TRIAC dẫn
+            GPIO_Write(GPIOA, 15, 0);   // Tắt
+        }
+    }
+}
+
+
+float get_average_temperature(float new_temperature) {
+    // Cập nhật giá trị mẫu trong mảng
+    temperature_samples[sample_index] = new_temperature;
+    sample_index = (sample_index + 1) % NUM_SAMPLES;  // Vòng lại khi đủ số lượng mẫu
+
+    // Tính trung bình của các mẫu
+    float sum = 0;
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        sum += temperature_samples[i];
+    }
+
+    return sum / NUM_SAMPLES;  // Trả về giá trị trung bình
+}
+ 
+// Hàm làm tròn giá trị nhiệt độ với 1 chữ số sau dấu thập phân
+float round_temperature(float temp) {
+    return ((int)(temp * 100 + 0.5)) / 100.0;  // Làm tròn đến 1 chữ số sau dấu thập phân
+}
+// Hàm kiểm tra và cập nhật màn hình hoặc LED nếu nhiệt độ thay đổi đáng kể
+void update_display_if_needed(float new_temperature) {
+
+
+    // Lọc và làm tròn nhiệt độ
+     avg_temperature = get_average_temperature(new_temperature);
+     avg_temperature = round_temperature(avg_temperature);
+
+		if (Get_Millis() - temp_utime >= 500){
+		temp_utime = Get_Millis();
+		 // Chỉ cập nhật nếu nhiệt độ thay đổi đáng kể (>= TEMPERATURE_CHANGE_THRESHOLD)
+			if (fabs(avg_temperature - last_displayed_temperature) >= TEMPERATURE_CHANGE_THRESHOLD) {
+        last_displayed_temperature = avg_temperature;
+        
+				led7seg_update_display_custom(last_displayed_temperature);
+			}
+		}
+}
+
+void Action_Alarm(void) {
+		g_alarmEnabled=!g_alarmEnabled;
+		current_time =((uint32_t)RTC->CNTH << 16) | RTC->CNTL;
+		switch (g_current_menu->selected_item->id){
+			case ON_OFF:
+				setpoint=g_temperature_setting;
+				time_check=0xFFFFFFFF;
+				 break;
+			case TIMED:
+				setpoint=g_temperature_setting;
+				time_check = DateTimeToSeconds(&g_alarmDate,&g_alarmTime);
+				 break;
+			case CHICKEN_W1:
+				setpoint=37.8f;
+				time_check=current_time+604800UL;
+				 break;
+			case CHICKEN_W2:
+				setpoint=37.5f;
+				time_check=current_time+604800UL;
+				 break; 
+			case CHICKEN_W3:
+				setpoint=37.2f;
+				time_check=current_time+604800UL;
+				 break;
+			case DUCK_W1_2:
+				setpoint=38.0f;
+				time_check=current_time+1209600UL;
+				 break;
+			case DUCK_W3:
+				setpoint=37.5f;
+				time_check=current_time+604800UL;
+				 break; 
+			case DUCK_W4:
+				setpoint=37.5f;
+				time_check=current_time+604800UL;
+				 break;
+      case QUAIL_W1_2:
+				setpoint=37.6f;
+				time_check=current_time+1209600UL;
+				 break;
+			case QUAIL_W3:
+				setpoint=37.2f;
+				time_check=current_time+259200UL;
+				 break; 
+	     default: g_alarmEnabled = false;
+	}
+}
+
+bool ckeck_alarm(){
+    current_time =((uint32_t)RTC->CNTH << 16) | RTC->CNTL;
+		if(g_alarmEnabled && time_check >= current_time)	return 1;
+		else return 0;
+}
