@@ -660,7 +660,6 @@ void TIM2_IRQHandler(void) {
         led7seg_scan_custom();
 				}else {GPIOB->ODR |= 0xF<<12; }
         // Xóa cờ ngắt Update để Timer có thể tạo ngắt ở chu kỳ tiếp theo.
-        // Ghi 0 vào bit UIF để xóa nó.
         TIM2->SR &= ~TIM_SR_UIF; // Hoặc TIM2->SR &= ~(1U << 0);
     }
 }
