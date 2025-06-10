@@ -564,10 +564,7 @@ int main(void) {
 				
 		
     while(1) {
-		//GPIOC->ODR ^= (1 << 13); // Nếu LED ở PC13
-				//delay_ms(1000);
-				//CLCD_I2C_BacklightOff(&LCD1);
-				     
+
              PT100_Temperature = MAX31865_Get_Temperature();
 						  update_display_if_needed(PT100_Temperature);
 							if(ckeck_alarm()) PID();							
@@ -627,8 +624,6 @@ void EXTI_Config_Init(void) {
     my_exti.IRQ_SubPriority = 3; // Phụ ưu tiên
     EXTI_Init(&my_exti);
 }
-
-
 
 
 // --- Các ISR chỉ set cờ, logic được xử lý trong ProcessMenu ---
