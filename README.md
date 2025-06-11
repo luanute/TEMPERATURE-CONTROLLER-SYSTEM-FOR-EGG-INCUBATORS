@@ -6,7 +6,7 @@ This is the firmware for an STM32F1-based egg incubator controller. It provides 
 
 * **Smart Menu System:** A multi-level menu on a 20x4 I2C LCD, navigated by 5 push buttons.
 * **Precise Temperature Control:** Uses a PID algorithm and a high-accuracy PT100 sensor (with a MAX31865 module).
-* **Optimized Power Control:** Manages the heater's SSR using Phase-Angle Control with a Zero-Cross Detector for stable and efficient heating.
+* **Optimized Power Control:** SSR control using Phase-Angle Control synchronized with a zero-cross detector.
 * **Flexible Operation Modes:**
     * **AUTO Mode:** Pre-set incubation programs for Chicken, Duck, and Quail eggs.
     * **MANUAL Mode:** Allows users to set a custom target temperature and timer.
