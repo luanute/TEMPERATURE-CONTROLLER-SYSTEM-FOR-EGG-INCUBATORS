@@ -1,13 +1,12 @@
 #ifndef INC_STM32F103_SPI_DRIVER_H_
 #define INC_STM32F103_SPI_DRIVER_H_
 
-#include "stm32f10x.h" // Hoặc header chuẩn cho STM32F103 của bạn
+#include "stm32f10x.h"
 #include <stddef.h>
 /* ================================================================== */
 /* Type Definitions                             */
 /* ================================================================== */
 
-// Định nghĩa kiểu con trỏ thanh ghi SPI
 typedef SPI_TypeDef SPI_RegDef_t;
 
 // Cấu trúc cấu hình SPI
@@ -88,21 +87,6 @@ typedef struct SPI_Handle_t
 #define SPI_SSM_DI                          0 // Hardware NSS
 #define SPI_SSM_EN                          1 // Software NSS
 
-/*
- * SPI Application States (for IT mode)
- */
-#define SPI_READY           0
-#define SPI_BUSY_IN_RX      1
-#define SPI_BUSY_IN_TX      2
-
-/*
- * SPI Application Events (for Callback)
- */
-#define SPI_EVENT_TX_CMPLT  1
-#define SPI_EVENT_RX_CMPLT  2
-#define SPI_EVENT_OVR_ERR   3
-#define SPI_EVENT_CRC_ERR   4
-#define SPI_EVENT_MODF_ERR  5
 
 /* ================================================================== */
 /* Function Prototypes (APIs)                        */
@@ -121,26 +105,9 @@ void SPI_ReceiveData(SPI_RegDef_t *pSPIx, uint8_t *pRxBuffer, uint32_t Len);
 void SPI_MasterReceiveData(SPI_RegDef_t *pSPIx, uint8_t *pRxBuffer, uint32_t Len);
 // uint8_t SPI_TransferData(SPI_Handle_t *pSPIHandle, uint8_t *pTxData, uint8_t *pRxData, uint32_t Len); // Có thể thêm hàm này
 
-/* Data Send and Receive (Interrupt) */
-uint8_t SPI_SendDataIT(SPI_Handle_t *pSPIHandle, uint8_t *pTxBuffer, uint32_t Len);
-uint8_t SPI_ReceiveDataIT(SPI_Handle_t *pSPIHandle, uint8_t *pRxBuffer, uint32_t Len);
-
-/* IRQ Configuration and ISR Handling */
-void SPI_IRQInterruptConfig(uint8_t IRQNumber, uint8_t EnorDi);
-void SPI_IRQPriorityConfig(uint8_t IRQNumber, uint32_t IRQPriority);
-void SPI_IRQHandling(SPI_Handle_t *pHandle); // Called from ISR
-
 /* Other Peripheral Control APIs */
 void SPI_PeripheralControl(SPI_RegDef_t *pSPIx, uint8_t EnorDi);
 uint8_t SPI_GetFlagStatus(SPI_RegDef_t *pSPIx, uint32_t FlagName);
-void SPI_ClearOVRFlag(SPI_RegDef_t *pSPIx);
-void SPI_CloseTransmission(SPI_Handle_t *pSPIHandle);
-void SPI_CloseReception(SPI_Handle_t *pSPIHandle);
-
-
-/* Application Callback */
-void SPI_ApplicationEventCallback(SPI_Handle_t *pSPIHandle, uint8_t AppEv);
-
 
 #endif /* INC_STM32F103_SPI_DRIVER_H_ */
 
