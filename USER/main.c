@@ -170,7 +170,6 @@ bool ckeck_alarm();
 // =================================================================================
 
 // --- 3.1. Các hàm Action Callback (hàm được gọi khi chọn một mục ACTION) ---
-// Đây là các hàm "bọc" để gọi lại hàm Activation 
 void Action_ToggleFan() {
     g_fan_status = !g_fan_status;
     if (g_fan_status) { GPIOB->ODR |= (1 << 8); } else { GPIOB->ODR &= ~(1 << 8); }
@@ -585,46 +584,40 @@ void EXTI_Config_Init(void) {
     // Cấu hình ngắt cho nút BACK (C13)
     my_exti.GPIO_Port = GPIOC;
     my_exti.GPIO_Pin = 13;  // Chân C13
-    my_exti.Trigger = EXTI_TRIGGER_FALLING; // Kích hoạt ngắt khi có sự thay đổi xuống
-    my_exti.IRQ_PreemptionPriority = 6; // Ưu tiên ngắt
-    my_exti.IRQ_SubPriority = 0; // Phụ ưu tiên
+    my_exti.Trigger = EXTI_TRIGGER_FALLING; // cạnh xuống
+    my_exti.IRQ_PreemptionPriority = 6; // Ưu tiên 
+    my_exti.IRQ_SubPriority = 0;
     EXTI_Init(&my_exti);
 
     // Cấu hình ngắt cho nút DOWN (A0)
-		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Port = GPIOA;
     my_exti.GPIO_Pin = 0;  // Chân A0
-		my_exti.IRQ_SubPriority = 1;
+    my_exti.IRQ_SubPriority = 1;
     EXTI_Init(&my_exti);
 
     // Cấu hình ngắt cho nút SELECT (A1)
-		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Port = GPIOA;
     my_exti.GPIO_Pin = 1;  // Chân A1
-		 my_exti.IRQ_SubPriority = 2;
+    my_exti.IRQ_SubPriority = 2;
     EXTI_Init(&my_exti);
 
     // Cấu hình ngắt cho nút UP (A2)
-		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Port = GPIOA;
     my_exti.GPIO_Pin = 2;  // Chân A2
     EXTI_Init(&my_exti);
-		 my_exti.IRQ_SubPriority = 3;
+    my_exti.IRQ_SubPriority = 3;
 
     // Cấu hình ngắt cho nút NEXT (A3)
-		my_exti.GPIO_Port = GPIOA;
+    my_exti.GPIO_Port = GPIOA;
     my_exti.GPIO_Pin = 3;  // Chân A3
-		 my_exti.IRQ_SubPriority = 4;
+    my_exti.IRQ_SubPriority = 4;
     EXTI_Init(&my_exti);
 		
-		// Cấu hình ngắt cho nút NEXT (A3)
-		my_exti.GPIO_Port = GPIOA;
-    my_exti.GPIO_Pin = 3;  // Chân A3
-		 my_exti.IRQ_SubPriority = 4;
-    EXTI_Init(&my_exti);
-		
-		my_exti.GPIO_Port = GPIOB;
-    my_exti.GPIO_Pin = 9;  // Chân A3
-		 my_exti.Trigger = EXTI_TRIGGER_RISING; // Kích hoạt ngắt khi có sự thay đổi xuống
-    my_exti.IRQ_PreemptionPriority = 2; // Ưu tiên ngắt
-    my_exti.IRQ_SubPriority = 3; // Phụ ưu tiên
+    my_exti.GPIO_Port = GPIOB;
+    my_exti.GPIO_Pin = 9;  
+    my_exti.Trigger = EXTI_TRIGGER_RISING;
+    my_exti.IRQ_PreemptionPriority = 2;
+    my_exti.IRQ_SubPriority = 3; 
     EXTI_Init(&my_exti);
 }
 
@@ -650,18 +643,14 @@ void EXTI9_5_IRQHandler(void) {
 }
 
 void TIM2_IRQHandler(void) {
-    // Kiểm tra xem ngắt có phải là do cờ Update (UIF - Update Interrupt Flag) gây ra không
-    // Thanh ghi TIM2_SR, bit UIF (bit 0)
-    if (TIM2->SR & TIM_SR_UIF) { // Hoặc (TIM2->SR & (1U << 0))
-
-			  if(display7seg){
+    if (TIM2->SR & TIM_SR_UIF) { 
+	if(display7seg){
         led7seg_scan_custom();
-				}else {GPIOB->ODR |= 0xF<<12; }
+	}else {GPIOB->ODR |= 0xF<<12; }
         // Xóa cờ ngắt Update để Timer có thể tạo ngắt ở chu kỳ tiếp theo.
-        TIM2->SR &= ~TIM_SR_UIF; // Hoặc TIM2->SR &= ~(1U << 0);
+        TIM2->SR &= ~(1U << 0);
     }
 }
-
 
 
 void PID() {
@@ -700,7 +689,6 @@ void PID() {
         // Cập nhật sai số trước đó
         previous_error = PID_error;
     }
-
     // Xử lý kích TRIAC khi phát hiện zero-cross
     if (zero_cross_detected) {
         zero_cross_detected = 0; // Reset cờ zero-cross
@@ -735,11 +723,10 @@ float get_average_temperature(float new_temperature) {
  
 // Hàm làm tròn giá trị nhiệt độ với 1 chữ số sau dấu thập phân
 float round_temperature(float temp) {
-    return ((int)(temp * 100 + 0.5)) / 100.0;  // Làm tròn đến 1 chữ số sau dấu thập phân
+    return ((int)(temp * 100 + 0.5)) / 100.0;  // Làm tròn đến 2 chữ số sau dấu thập phân
 }
 // Hàm kiểm tra và cập nhật màn hình hoặc LED nếu nhiệt độ thay đổi đáng kể
 void update_display_if_needed(float new_temperature) {
-
 
     // Lọc và làm tròn nhiệt độ
      avg_temperature = get_average_temperature(new_temperature);
@@ -749,8 +736,7 @@ void update_display_if_needed(float new_temperature) {
 		temp_utime = Get_Millis();
 		 // Chỉ cập nhật nếu nhiệt độ thay đổi đáng kể (>= TEMPERATURE_CHANGE_THRESHOLD)
 			if (fabs(avg_temperature - last_displayed_temperature) >= TEMPERATURE_CHANGE_THRESHOLD) {
-        last_displayed_temperature = avg_temperature;
-        
+                                last_displayed_temperature = avg_temperature;
 				led7seg_update_display_custom(last_displayed_temperature);
 			}
 		}
