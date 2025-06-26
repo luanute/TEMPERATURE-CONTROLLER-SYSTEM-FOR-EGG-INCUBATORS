@@ -725,7 +725,7 @@ float get_average_temperature(float new_temperature) {
 float round_temperature(float temp) {
     return ((int)(temp * 100 + 0.5)) / 100.0;  // Làm tròn đến 2 chữ số sau dấu thập phân
 }
-// Hàm kiểm tra và cập nhật màn hình hoặc LED nếu nhiệt độ thay đổi đáng kể
+// Hàm kiểm tra và cập nhật LED nếu nhiệt độ thay đổi đáng kể
 void update_display_if_needed(float new_temperature) {
 
     // Lọc và làm tròn nhiệt độ
