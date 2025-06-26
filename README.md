@@ -21,3 +21,9 @@ This is the firmware for an STM32F1-based egg incubator controller. It provides 
 * **NEXT:** Enter a sub-menu or an editing screen. In edit mode, it cycles through fields (e.g., HH:MM:SS).
 * **BACK:** Return to the previous menu or cancel an edit.
 * **SELECT:** Confirm a selection, execute an action, or save changes from an editing screen.
+
+## 📸 Product Images
+![Screenshot 2025-04-29 131256](https://github.com/user-attachments/assets/3e4bf943-a4b6-4f3f-a00c-0f8fe001e5e9)
+![Uploading image.png…]()
+
+
