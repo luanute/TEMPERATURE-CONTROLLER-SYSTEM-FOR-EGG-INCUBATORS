@@ -24,6 +24,7 @@ This is the firmware for an STM32F1-based egg incubator controller. It provides 
 
 ## 📸 Product Images
 ![Screenshot 2025-04-29 131256](https://github.com/user-attachments/assets/3e4bf943-a4b6-4f3f-a00c-0f8fe001e5e9)
-![Uploading image.png…]()
+   
+![z6679536669089_95290f0fbbdf5ea4011f638a232ee9f5](https://github.com/user-attachments/assets/63250d3d-52e9-48f8-ab29-7f13d6283510)
 
 
