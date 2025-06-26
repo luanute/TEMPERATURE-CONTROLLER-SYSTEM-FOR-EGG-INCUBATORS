@@ -132,6 +132,12 @@ float PID_p = 0.0;
 float PID_d = 0.0;
 float PID_value = 0.0;
 float kd = 1, ki = 0.025, kp = 1.8;
+
+// Các biến trạng thái điều khiển SSR
+	uint8_t fix = 0;      // Đánh dấu bật trước khi ổn định (pre-heat)
+	uint8_t fix_oke = 0;  // Đánh dấu đã bật nhiệt ổn định
+	const uint16_t max_firing_delay = 8300; 
+
 bool zero_cross_detected = 0;
 bool display7seg = true;
 uint32_t timePrev = 0;
@@ -141,19 +147,16 @@ uint32_t temp_utime;
 float elapsedTime;
 const uint8_t daysInMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
-// --- Biến cho chức năng hẹn giờ / báo thức ---
+// --- Biến cho chức năng hẹn giờ ---
 Time_t g_alarmTime = {07, 00, 00}; 
 Date_t g_alarmDate = {7, 6, 2025}; 
 uint32_t time_check;
 uint32_t current_time;
-bool   g_alarmEnabled = false;     // Cờ cho phép/vô hiệu hóa báo thức
+bool   g_alarmEnabled = false;     // Cờ cho phép/vô hiệu hóa 
 
 // ...
 
-// Các biến trạng thái điều khiển SSR
-	uint8_t fix = 0;      // Đánh dấu bật trước khi ổn định (pre-heat)
-	uint8_t fix_oke = 0;  // Đánh dấu đã bật nhiệt ổn định
-	const uint16_t max_firing_delay = 8300; 
+
 	
 	
 // --- 2.4. Khai báo các hàm chức năng (giữ nguyên) ---
@@ -287,7 +290,7 @@ Menu_t menu_main = {"    MAIN MENU       ", &item_main_auto, &item_main_auto, NU
 
 
 // =================================================================================
-// PHẦN 4: LOGIC ĐIỀU KHIỂN VÀ HIỂN THỊ MENU MỚI
+// PHẦN 4: LOGIC ĐIỀU KHIỂN VÀ HIỂN THỊ MENU
 // =================================================================================
 
 // --- 4.1. Các hàm con để hiển thị màn hình chỉnh sửa ---
@@ -494,21 +497,21 @@ void EXTI_Config_Init(void);
 void setup_MAX31865_SPI(void) {
         GPIOx_INIT(GPIOA,5, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//clk
         GPIOx_INIT(GPIOA,6, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//MISO
-				GPIOx_INIT(GPIOA,7, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//MOSI 
-		    GPIOx_INIT(GPIOA,4, GPIO_MODE_OUTPUT_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//CS
+	GPIOx_INIT(GPIOA,7, GPIO_MODE_AF_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//MOSI 
+	GPIOx_INIT(GPIOA,4, GPIO_MODE_OUTPUT_PP,GPIO_NOPULL,GPIO_SPEED_FREQ_HIGH);//CS
     //    ...
-    //    cs_reset(); // Kéo CS lên cao ban đầu sau khi cấu hình GPIO
+    // Kéo CS lên cao ban đầu sau khi cấu hình GPIO
 				GPIOA->ODR |=1<<4;
-    // 2. Khởi tạo SPI1 bằng driver của bạn
+    // 2. Khởi tạo SPI1 
     SPI_Handle_t hspi_max31865; // Đổi tên để tránh trùng với hspi1 nếu bạn vẫn dùng HAL ở đâu đó
     hspi_max31865.pSPIx = SPI1; // MAX31865_SPI đã được định nghĩa là SPI1 trong MAX31865_lib.c
     hspi_max31865.SPIConfig.SPI_DeviceMode = SPI_DEVICE_MODE_MASTER;
     hspi_max31865.SPIConfig.SPI_BusConfig = SPI_BUS_CONFIG_FD;
-    hspi_max31865.SPIConfig.SPI_SclkSpeed = SPI_SCLK_SPEED_DIV16; // Giả sử PCLK=72MHz, SCK = 4.5MHz
+    hspi_max31865.SPIConfig.SPI_SclkSpeed = SPI_SCLK_SPEED_DIV16; // PCLK=72MHz, SCK = 4.5MHz
     hspi_max31865.SPIConfig.SPI_DFF = SPI_DFF_8BITS;
     hspi_max31865.SPIConfig.SPI_CPOL = SPI_CPOL_LOW;     // CPOL = 0
     hspi_max31865.SPIConfig.SPI_CPHA = SPI_CPHA_SECOND_EDGE;
-    hspi_max31865.SPIConfig.SPI_SSM = SPI_SSM_EN;        // Software slave management
+    hspi_max31865.SPIConfig.SPI_SSM = SPI_SSM_EN;       
 
     SPI_Init(&hspi_max31865);
     SPI_PeripheralControl(hspi_max31865.pSPIx, ENABLE); // Bật ngoại vi SPI
