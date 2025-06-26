@@ -503,14 +503,14 @@ void setup_MAX31865_SPI(void) {
     // Kéo CS lên cao ban đầu sau khi cấu hình GPIO
 				GPIOA->ODR |=1<<4;
     // 2. Khởi tạo SPI1 
-    SPI_Handle_t hspi_max31865; // Đổi tên để tránh trùng với hspi1 nếu bạn vẫn dùng HAL ở đâu đó
-    hspi_max31865.pSPIx = SPI1; // MAX31865_SPI đã được định nghĩa là SPI1 trong MAX31865_lib.c
+    SPI_Handle_t hspi_max31865; 
+    hspi_max31865.pSPIx = SPI1; 
     hspi_max31865.SPIConfig.SPI_DeviceMode = SPI_DEVICE_MODE_MASTER;
     hspi_max31865.SPIConfig.SPI_BusConfig = SPI_BUS_CONFIG_FD;
     hspi_max31865.SPIConfig.SPI_SclkSpeed = SPI_SCLK_SPEED_DIV16; // PCLK=72MHz, SCK = 4.5MHz
     hspi_max31865.SPIConfig.SPI_DFF = SPI_DFF_8BITS;
     hspi_max31865.SPIConfig.SPI_CPOL = SPI_CPOL_LOW;     // CPOL = 0
-    hspi_max31865.SPIConfig.SPI_CPHA = SPI_CPHA_SECOND_EDGE;
+    hspi_max31865.SPIConfig.SPI_CPHA = SPI_CPHA_SECOND_EDGE; 
     hspi_max31865.SPIConfig.SPI_SSM = SPI_SSM_EN;       
 
     SPI_Init(&hspi_max31865);
