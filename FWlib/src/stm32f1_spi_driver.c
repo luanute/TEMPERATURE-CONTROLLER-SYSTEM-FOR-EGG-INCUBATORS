@@ -1,17 +1,6 @@
 #include "stm32f1_spi_driver.h" // Include header tương ứng
 
-/* ================================================================== */
-/* Static Helper Function Prototypes (Private to this file)           */
-/* ================================================================== */
 static void spi_wait_for_flag(SPI_RegDef_t *pSPIx, uint32_t Flag);
-static void spi_txe_interrupt_handle(SPI_Handle_t *pSPIHandle);
-static void spi_rxne_interrupt_handle(SPI_Handle_t *pSPIHandle);
-static void spi_ovr_err_interrupt_handle(SPI_Handle_t *pSPIHandle);
-
-
-/* ================================================================== */
-/* Function Implementations (APIs)                         */
-/* ================================================================== */
 
 /* Peripheral Clock Setup */
 void SPI_PeriClockControl(SPI_RegDef_t *pSPIx, uint8_t EnorDi)
@@ -277,106 +266,7 @@ uint8_t SPI_GetFlagStatus(SPI_RegDef_t *pSPIx, uint32_t FlagName)
     return RESET;
 }
 
-void SPI_ClearOVRFlag(SPI_RegDef_t *pSPIx) {
-     uint8_t temp_dr;
-     uint8_t temp_sr;
-     temp_dr = *((volatile uint8_t*)&pSPIx->DR); // Đọc DR
-     temp_sr = (uint8_t)pSPIx->SR;                // Đọc SR
-     (void)temp_dr; // Tránh warning unused
-     (void)temp_sr;
-}
-
-// Đóng giao tiếp TX (thường gọi trong callback TX_CMPLT)
-void SPI_CloseTransmission(SPI_Handle_t *pSPIHandle) {
-    pSPIHandle->pSPIx->CR2 &= ~( 1 << 7); // Tắt ngắt TXEIE
-    pSPIHandle->pTxBuffer = NULL;
-    pSPIHandle->TxLen = 0;
-    pSPIHandle->TxRxState = SPI_READY;
-}
-
-// Đóng giao tiếp RX (thường gọi trong callback RX_CMPLT)
-void SPI_CloseReception(SPI_Handle_t *pSPIHandle) {
-    pSPIHandle->pSPIx->CR2 &= ~( 1 << 6); // Tắt ngắt RXNEIE
-    pSPIHandle->pRxBuffer = NULL;
-    pSPIHandle->RxLen = 0;
-    pSPIHandle->TxRxState = SPI_READY;
-}
-
-
-/*==========================================================================================
- * Static Helper Function Implementations
- *==========================================================================================*/
-
 static void spi_wait_for_flag(SPI_RegDef_t *pSPIx, uint32_t Flag) {
     while(!(pSPIx->SR & Flag));
 }
 
-static void spi_txe_interrupt_handle(SPI_Handle_t *pSPIHandle) {
-    if (pSPIHandle->pSPIx->CR1 & SPI_CR1_DFF) { // 16-bit
-        if(pSPIHandle->TxLen >= 2) {
-             pSPIHandle->pSPIx->DR = *((uint16_t*)pSPIHandle->pTxBuffer);
-             pSPIHandle->TxLen -= 2;
-             pSPIHandle->pTxBuffer += 2; // Tăng con trỏ 2 byte
-        } else if (pSPIHandle->TxLen == 1) { // Gửi nốt byte lẻ nếu DFF=16? Không chuẩn nhưng tạm xử lý
-             pSPIHandle->pSPIx->DR = (*(pSPIHandle->pTxBuffer)) & 0x00FF;
-             pSPIHandle->TxLen--;
-             pSPIHandle->pTxBuffer++;
-        }
-    } else { // 8-bit
-         if(pSPIHandle->TxLen > 0) {
-            // Ghi 8 bit thấp vào DR (DR là 16 bit nhưng phần cứng xử lý)
-            *((volatile uint8_t*)&pSPIHandle->pSPIx->DR) = *(pSPIHandle->pTxBuffer);
-            pSPIHandle->TxLen--;
-            pSPIHandle->pTxBuffer++;
-         }
-    }
-
-    if (pSPIHandle->TxLen == 0) {
-        SPI_CloseTransmission(pSPIHandle); // Gọi hàm đóng giao tiếp TX
-        SPI_ApplicationEventCallback(pSPIHandle, SPI_EVENT_TX_CMPLT);
-    }
-}
-
-static void spi_rxne_interrupt_handle(SPI_Handle_t *pSPIHandle) {
-     if (pSPIHandle->pSPIx->CR1 & SPI_CR1_DFF) { // 16-bit
-         if (pSPIHandle->RxLen >= 2) {
-            *((uint16_t*)pSPIHandle->pRxBuffer) = (uint16_t)pSPIHandle->pSPIx->DR;
-            pSPIHandle->RxLen -= 2;
-            pSPIHandle->pRxBuffer += 2;
-         } else if (pSPIHandle->RxLen == 1) { // Nhận nốt byte lẻ?
-             *(pSPIHandle->pRxBuffer) = (uint8_t)(pSPIHandle->pSPIx->DR & 0x00FF);
-             pSPIHandle->RxLen--;
-             pSPIHandle->pRxBuffer++;
-         }
-    } else { // 8-bit
-        if(pSPIHandle->RxLen > 0) {
-            *(pSPIHandle->pRxBuffer) = *((volatile uint8_t*)&pSPIHandle->pSPIx->DR);
-            pSPIHandle->RxLen--;
-            pSPIHandle->pRxBuffer++;
-        }
-    }
-
-    if (pSPIHandle->RxLen == 0) {
-        SPI_CloseReception(pSPIHandle); // Gọi hàm đóng giao tiếp RX
-        SPI_ApplicationEventCallback(pSPIHandle, SPI_EVENT_RX_CMPLT);
-    }
-}
-
-static void spi_ovr_err_interrupt_handle(SPI_Handle_t *pSPIHandle) {
-    // Chỉ xóa lỗi OVR nếu SPI không đang truyền để tránh ảnh hưởng TX buffer
-    if (pSPIHandle->TxRxState != SPI_BUSY_IN_TX) {
-       SPI_ClearOVRFlag(pSPIHandle->pSPIx); // Gọi hàm xóa cờ OVR
-    }
-    SPI_ApplicationEventCallback(pSPIHandle, SPI_EVENT_OVR_ERR);
-}
-
-
-/*==========================================================================================
- * Application Callback (Weak Implementation)
- *==========================================================================================*/
-__attribute__((weak)) void SPI_ApplicationEventCallback(SPI_Handle_t *pSPIHandle, uint8_t AppEv)
-{
-    // This function should be implemented by the application.
-    (void)pSPIHandle; // Tránh warning unused
-    (void)AppEv;      // Tránh warning unused
-}
